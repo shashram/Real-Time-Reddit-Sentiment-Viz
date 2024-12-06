@@ -1,0 +1,149 @@
+import requests
+import time
+import json
+import praw
+from azure.eventhub import EventHubProducerClient, EventData
+import nltk
+from nltk.corpus import stopwords
+from nltk.tokenize import word_tokenize
+from nltk.sentiment import SentimentIntensityAnalyzer
+from datetime import datetime
+
+
+# Download necessary NLTK resources
+nltk.download('punkt')
+nltk.download('stopwords')
+nltk.download('vader_lexicon')
+# Define categories
+categories = ['sports', 'technology', 'entertainment']
+
+connection_str_news = 'Endpoint=sb://redditapi-iotproject.servicebus.windows.net/;SharedAccessKeyName=newpolicy;SharedAccessKey=W6WIMC7kHLTsvGuJ+s3YJfJHpwGvOvHX1+AEhBBrJsA='
+eventhub_name_news = 'reddit-post-titles'
+producer_news = EventHubProducerClient.from_connection_string(conn_str=connection_str_news, eventhub_name=eventhub_name_news)
+
+
+api_key = "8a11f7e407634768a14420f6ee831756"
+
+reddit = praw.Reddit(client_id='odOrfbdmfy2iZ_mfP2cIXQ',
+                     client_secret='l27MwqGY6570MsC4p8L4BJwDjhXykg',
+                     user_agent='my-app by shashram')
+
+limit = 10
+num_comments_to_collect = 10
+
+# Initialize the NLTK sentiment analyzer
+sid = SentimentIntensityAnalyzer()
+
+connection_str_reddit = 'Endpoint=sb://redditapi-iotproject.servicebus.windows.net/;SharedAccessKeyName=policy;SharedAccessKey=fkfGrG+RsAGhXzSiUrsdB7PpQl7ZqMyl1+AEhGrcTBA='
+eventhub_name_reddit = 'reddit-application-eventhub'
+producer_reddit = EventHubProducerClient.from_connection_string(conn_str=connection_str_reddit, eventhub_name=eventhub_name_reddit)
+
+
+def fetch_titles(category):
+    url = f"https://newsapi.org/v2/top-headlines?language=en&category={category}&pageSize=50&apiKey={api_key}"
+
+    url = url.format(category=category, api_key=api_key)
+    response = requests.get(url)
+    data = response.json()
+    articles = data.get('articles', [])
+    titles = [article['title'] for article in articles if article['title'] != '[Removed]']
+    
+    return titles
+
+def extract_keywords(titles):
+        stop_words = set(stopwords.words('english'))
+        keywords = []
+
+        for title in titles:
+            # Tokenize the title
+            words = word_tokenize(title)
+            # Remove stopwords and non-alphabetic words
+            filtered_words = [word for word in words if word.lower() not in stop_words and word.isalpha()]
+
+            # Keep only the first three keywords
+            first_three_keywords = filtered_words[:3]  # Slice the list to get the first three elements
+            keywords.append(first_three_keywords)
+
+        return keywords
+
+while True:
+    for category in categories:
+        titles = fetch_titles(category)
+    # Extract keywords
+        for title in titles:
+            print(title + '\n')
+            
+            keywords = extract_keywords([title])
+            count =0
+            for query in keywords:
+                search_query = '"' + ' '.join(query) + '"'
+                search_results = reddit.subreddit("all").search(search_query, sort='new', limit=None)
+                for post in search_results:
+                    count += 1
+            data = {'title': title, 'count': count}  # Create a dictionary with the title
+            json_data = json.dumps(data)
+            event_data_batch_title = producer_news.create_batch()
+            event_data_batch_title.add(EventData(json_data))
+            producer_news.send_batch(event_data_batch_title)
+
+        keywords = extract_keywords(titles)
+        
+        
+        for query in keywords:
+            search_query = '"' + ' '.join(query) + '"'
+            search_results = reddit.subreddit("all").search(search_query, limit=limit)
+
+            print(f"Search Results for: {search_query}\n")
+            
+            for post in search_results:
+                title = post.title
+                # created_utc = post.created_utc
+                # created_datetime = datetime.utcfromtimestamp(created_utc)
+
+                # created_readable = created_datetime.strftime('%Y-%m-%d %H:%M:%S')
+
+                
+                post.comments.replace_more(limit=0)  # Ensure all comments are loaded
+
+                total_score = 0
+                num_comments = 0
+
+                for comment in post.comments.list()[:num_comments_to_collect]:
+                    # Skip comments that are removed, deleted, or contain gifs
+                    if comment.body == '[removed]' or comment.body == '[deleted]' or '![gif]' in comment.body:
+                        continue
+
+                    # Calculate sentiment score for the comment
+                    scores = sid.polarity_scores(comment.body)
+                    comment_score = scores['compound']
+
+                    # Add the sentiment score to the total score
+                    total_score += comment_score
+                    num_comments += 1
+
+                    # print(f"Comment: {comment.body}")
+                    # print(f"Sentiment Score: {comment_score}")
+                    # print('\n')
+
+                if num_comments > 0:
+                    avg_score = (total_score / num_comments)
+                    data = {
+                        "post_title": title,
+                        "avg_sentiment_score": avg_score,
+                        "category": category
+                    }
+                    # Convert to JSON string
+                    json_data_score = json.dumps(data)
+                else:
+                        print("No valid comments found.")
+                        # Skip creating data if avg_score is None
+                        continue
+
+
+                # Send data to Azure Event Hubs
+                event_data_batch = producer_reddit.create_batch()
+                event_data_batch.add(EventData(json_data_score))
+                producer_reddit.send_batch(event_data_batch)
+        # Close the producer_reddit
+        time.sleep(5)
+    producer_reddit.close()
