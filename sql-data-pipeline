@@ -1,0 +1,34 @@
+/*
+Here are links to help you get started with Stream Analytics Query Language:
+Common query patterns - https://go.microsoft.com/fwLink/?LinkID=619153
+Query language - https://docs.microsoft.com/stream-analytics-query/query-language-elements-azure-stream-analytics
+*/
+SELECT
+    *
+INTO
+    [My-workspace-posts] /* streams news titles and their counts into PowerBI */
+FROM
+    [reddit-application-eventhub-posts]
+
+SELECT
+    *
+INTO
+    [My-workspace-scores] /* streams reddit post titles and the average sentiment scores of their comments into PowerBI */
+FROM
+    [reddit-application-eventhub]
+
+
+
+SELECT
+    *
+INTO
+    [output-posts]  /* streams news titles and their counts into Azure blob storage */
+FROM
+    [reddit-application-eventhub-posts]
+
+SELECT
+    *
+INTO
+    [output-scores] /* streams reddit post titles and the average sentiment scores of their comments into Azure blob storage */
+FROM
+    [reddit-application-eventhub]
